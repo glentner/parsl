@@ -216,12 +216,20 @@ class DataFlowKernel(object):
 
         Count the number of unresolved futures in the list depends.
         """
+        logger.debug("_count_deps start")
         count = 0
         for dep in depends:
             if isinstance(dep, Future):
                 if not dep.done():
+                    logger.debug("count if ready: not-done Future")
                     count += 1
+                else:
+                    logger.debug("count if ready: done Future")
+            else:
+                logger.debug("count if ready: not Future")
+            
 
+        logger.debug("_count_deps end, count = {}".format(count))
         return count
 
     @property
@@ -355,7 +363,9 @@ class DataFlowKernel(object):
         launch_if_ready is thread safe, so may be called from any thread
         or callback.
         """
-        if self._count_deps(self.tasks[task_id]['depends']) == 0:
+        dep_count = self._count_deps(self.tasks[task_id]['depends'])
+        logger.debug("launch_if_ready: task id {} dep_count {} (needs to be 0 to launch)".format(task_id, dep_count))
+        if dep_count == 0:
 
             # We can now launch *task*
             new_args, kwargs, exceptions = self.sanitize_and_wrap(task_id,
@@ -495,10 +505,10 @@ class DataFlowKernel(object):
                 logger.debug("Submitting stage out for output file {}".format(repr(f)))
                 stageout_fut = self.data_manager.stage_out(f_copy, executor, app_fut)
                 if stageout_fut:
-                    logger.debug("Adding a dependency on stageout future for {}".format(repr(f)))
+                    logger.debug("Adding a stageout task dependency for {}".format(repr(f)))
                     app_fut._outputs.append(DataFuture(stageout_fut, f, tid=app_fut.tid))
                 else:
-                    logger.debug("No stageout dependency for {}".format(repr(f)))
+                    logger.debug("No stageout dependency for {} - will depend on task app_fut instead".format(repr(f)))
                     app_fut._outputs.append(DataFuture(app_fut, f, tid=app_fut.tid))
 
                 # this is a hook for post-task stageout
@@ -506,7 +516,10 @@ class DataFlowKernel(object):
                 # in the not-very-tested stageout system?
                 newfunc = self.data_manager.replace_task_stage_out(f_copy, func, executor)
                 if newfunc:
+                    logger.debug("Replacing task function with new task function from stageout")
                     func = newfunc
+                else:
+                    logger.debug("Not replacing task function as stageout did not return one")
             else:
                 logger.debug("Not performing staging for: {}".format(repr(f)))
                 app_fut._outputs.append(DataFuture(app_fut, f, tid=app_fut.tid))
@@ -528,20 +541,24 @@ class DataFlowKernel(object):
         unfinished_depends = []
 
         def check_dep(d):
+            logger.debug("_gather_all_deps: Examining potential dependency {} of type {}".format(d, type(d)))
             if isinstance(d, Future):
                 if d.tid not in self.tasks or self.tasks[d.tid]['status'] not in FINAL_STATES:
                     unfinished_depends.extend([d])
                 depends.extend([d])
 
+        logger.debug("Examining regular args")
         for dep in args:
             check_dep(dep)
 
+        logger.debug("Examining kw args")
         # Check for explicit kwargs ex, fu_1=<fut>
         for key in kwargs:
             dep = kwargs[key]
             check_dep(dep)
 
         # Check for futures in inputs=[<fut>...]
+        logger.debug("Examining inputs list")
         for dep in kwargs.get('inputs', []):
             check_dep(dep)
 
@@ -702,6 +719,7 @@ class DataFlowKernel(object):
 
         # Get the dep count and a list of dependencies for the task
         dep_cnt, depends = self._gather_all_deps(args, kwargs)
+        logger.debug("Depends for task {} is {}".format(task_id, depends))
         self.tasks[task_id]['depends'] = depends
 
         logger.info("Task {} submitted for App {}, waiting on tasks {}".format(task_id,
